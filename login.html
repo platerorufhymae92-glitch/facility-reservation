@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Login - Facility Reservation System</title>
+</head>
+<body>
+  <h1>Facility Reservation System</h1>
+  <h2>Login</h2>
+
+  <form id="loginForm">
+    <p><input type="email" id="email" placeholder="Email" required /></p>
+    <p><input type="password" id="password" placeholder="Password" required /></p>
+    <p><button type="submit">Login</button></p>
+  </form>
+  <p id="message" style="color: red;"></p>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="js/config.js"></script>
+  <script src="js/auth.js"></script>
+  <script>
+    // Kung naka-login na, diretso sa iyang page
+    getCurrentProfile().then((profile) => {
+      if (profile) window.location.href = pageForRole(profile.role);
+    });
+
+    document.getElementById("loginForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const msg = document.getElementById("message");
+      msg.textContent = "";
+
+      const { error } = await db.auth.signInWithPassword({
+        email: document.getElementById("email").value,
+        password: document.getElementById("password").value,
+      });
+
+      if (error) {
+        msg.textContent = "Login failed: " + error.message;
+        return;
+      }
+
+      const profile = await getCurrentProfile();
+      if (!profile) {
+        msg.textContent = "No profile found for this account.";
+        return;
+      }
+      window.location.href = pageForRole(profile.role);
+    });
+  </script>
+</body>
+</html>

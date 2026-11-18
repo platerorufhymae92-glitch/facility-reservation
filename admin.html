@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Administrator - Facility Reservation System</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 1100px; margin: 20px auto; padding: 0 12px; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 20px; }
+    th, td { border: 1px solid #ccc; padding: 6px 8px; text-align: left; font-size: 14px; }
+    th { background: #f0f0f0; }
+    button { margin-right: 4px; }
+    .error { color: red; }
+    .ok { color: green; }
+    .row-form input, .row-form select { margin-right: 6px; margin-bottom: 6px; }
+  </style>
+</head>
+<body>
+  <p id="checking">Checking access...</p>
+
+  <div id="content" style="display: none;">
+    <h1>Administrator Dashboard</h1>
+    <p>Logged in as: <b id="who"></b> <button onclick="logout()">Logout</button></p>
+
+    <p id="message"></p>
+
+    <h2>All Reservations</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Requester</th><th>Facility</th><th>Purpose</th>
+          <th>Start</th><th>End</th><th>Status</th><th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="reservationRows"></tbody>
+    </table>
+
+    <h2>Manage Facilities</h2>
+    <form id="facilityForm" class="row-form">
+      <input type="text" id="fName" placeholder="Name" required />
+      <input type="text" id="fLocation" placeholder="Location" />
+      <input type="number" id="fCapacity" placeholder="Capacity" min="1" />
+      <select id="fStatus">
+        <option>Active</option>
+        <option>Maintenance</option>
+        <option>Inactive</option>
+      </select>
+      <button type="submit">Add Facility</button>
+    </form>
+    <table>
+      <thead>
+        <tr><th>Name</th><th>Location</th><th>Capacity</th><th>Status</th><th>Actions</th></tr>
+      </thead>
+      <tbody id="facilityRows"></tbody>
+    </table>
+
+    <h2>Manage Users</h2>
+    <table>
+      <thead><tr><th>Email</th><th>Name</th><th>Role</th></tr></thead>
+      <tbody id="userRows"></tbody>
+    </table>
+
+    <h2>Audit Logs</h2>
+    <p><button onclick="loadAuditLogs()">Refresh Logs</button> (latest 50)</p>
+    <table>
+      <thead>
+        <tr>
+          <th>Date/Time</th><th>Action</th><th>Details</th>
+          <th>Performed By</th><th>Role</th>
+        </tr>
+      </thead>
+      <tbody id="auditRows"></tbody>
+    </table>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="js/config.js"></script>
+  <script src="js/auth.js"></script>
+  <script>
+    let currentProfile = null;
+
+    function cell(text) {
+      const td = document.createElement("td");
+      td.textContent = text;
+      return td;
+    }
+
+    function showMessage(text, isError) {
+      const msg = document.getElementById("message");
+      msg.textContent = text;
+      msg.className = isError ? "error" : "ok";
+    }
+
+    function makeButton(label, onClick) {
+      const btn = document.createElement("button");
+      btn.textContent = label;
+      btn.onclick = onClick;
+      return btn;
+    }
+
+    /* ---------------- RESERVATIONS ---------------- */
+    async function changeStatus(id, newStatus) {
+      if (!confirm("Change status to " + newStatus + "?")) return;
+      showMessage("", false);
+
+      const { error } = await db.from("reservations").update({ status: newStatus }).eq("id", id);
+
+      if (error) {
+        showMessage("Failed: " + error.message, true);
+        return;
+      }
+      showMessage("Status updated to " + newStatus + ".", false);
+      loadReservations();
+      loadAuditLogs();
+    }
+
+    async function loadReservations() {
+      const { data, error } = await db
+        .from("reservations")
+        .select("*, facilities(name), profiles(email)")
+        .order("created_at", { ascending: false });
+
+      if (error) { showMessage("Load failed: " + error.message, true); return; }
+
+      const rows = document.getElementById("reservationRows");
+      rows.innerHTML = "";
+
+      data.forEach((r) => {
+        const tr = document.createElement("tr");
+        tr.append(
+          cell(r.profiles ? r.profiles.email : ""),
+          cell(r.facilities ? r.facilities.name : ""),
+          cell(r.purpose),
+          cell(new Date(r.start_time).toLocaleString()),
+          cell(new Date(r.end_time).toLocaleString()),
+          cell(r.status)
+        );
+
+        const actions = document.createElement("td");
+        if (r.status === "Pending") {
+          actions.appendChild(makeButton("Approve", () => changeStatus(r.id, "Approved")));
+          actions.appendChild(makeButton("Reject", () => changeStatus(r.id, "Rejected")));
+          actions.appendChild(makeButton("Cancel", () => changeStatus(r.id, "Cancelled")));
+        } else if (r.status === "Approved") {
+          actions.appendChild(makeButton("Mark Scheduled", () => changeStatus(r.id, "Scheduled")));
+          actions.appendChild(makeButton("Cancel", () => changeStatus(r.id, "Cancelled")));
+        } else if (r.status === "Scheduled") {
+          actions.appendChild(makeButton("Cancel", () => changeStatus(r.id, "Cancelled")));
+        }
+        tr.appendChild(actions);
+        rows.appendChild(tr);
+      });
+    }
+
+    /* ---------------- FACILITIES ---------------- */
+    async function loadFacilities() {
+      const { data, error } = await db.from("facilities").select("*").order("name");
+      if (error) { showMessage("Load facilities failed: " + error.message, true); return; }
+
+      const rows = document.getElementById("facilityRows");
+      rows.innerHTML = "";
+
+      data.forEach((f) => {
+        const tr = document.createElement("tr");
+        tr.append(cell(f.name), cell(f.location || ""), cell(f.capacity ?? ""), cell(f.status));
+
+        const actions = document.createElement("td");
+        actions.appendChild(makeButton("Edit", () => editFacility(f)));
+        ["Active", "Maintenance", "Inactive"].forEach((s) => {
+          if (s !== f.status) {
+            actions.appendChild(makeButton(s, () => setFacilityStatus(f.id, s)));
+          }
+        });
+        actions.appendChild(makeButton("Delete", () => deleteFacility(f)));
+        tr.appendChild(actions);
+        rows.appendChild(tr);
+      });
+    }
+
+    document.getElementById("facilityForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      showMessage("", false);
+
+      const capacityValue = document.getElementById("fCapacity").value;
+      const { error } = await db.from("facilities").insert({
+        name: document.getElementById("fName").value,
+        location: document.getElementById("fLocation").value || null,
+        capacity: capacityValue ? parseInt(capacityValue, 10) : null,
+        status: document.getElementById("fStatus").value
+      });
+
+      if (error) { showMessage("Add facility failed: " + error.message, true); return; }
+
+      showMessage("Facility added.", false);
+      document.getElementById("facilityForm").reset();
+      loadFacilities();
+      loadAuditLogs();
+    });
+
+    async function editFacility(f) {
+      const name = prompt("Facility name:", f.name);
+      if (name === null) return;
+      const location = prompt("Location:", f.location || "");
+      if (location === null) return;
+      const capacity = prompt("Capacity:", f.capacity ?? "");
+      if (capacity === null) return;
+
+      const { error } = await db.from("facilities").update({
+        name: name,
+        location: location || null,
+        capacity: capacity ? parseInt(capacity, 10) : null
+      }).eq("id", f.id);
+
+      if (error) { showMessage("Edit failed: " + error.message, true); return; }
+      showMessage("Facility updated.", false);
+      loadFacilities();
+      loadAuditLogs();
+    }
+
+    async function setFacilityStatus(id, newStatus) {
+      if (!confirm("Change facility status to " + newStatus + "?")) return;
+      const { error } = await db.from("facilities").update({ status: newStatus }).eq("id", id);
+      if (error) { showMessage("Failed: " + error.message, true); return; }
+      showMessage("Facility status updated to " + newStatus + ".", false);
+      loadFacilities();
+      loadAuditLogs();
+    }
+
+    async function deleteFacility(f) {
+      if (!confirm("Delete facility '" + f.name + "'? This cannot be undone.")) return;
+      const { error } = await db.from("facilities").delete().eq("id", f.id);
+      if (error) {
+        showMessage("Delete failed: " + error.message + " (Facilities with reservations cannot be deleted. Set it to Inactive instead.)", true);
+        return;
+      }
+      showMessage("Facility deleted.", false);
+      loadFacilities();
+      loadAuditLogs();
+    }
+
+    /* ---------------- USERS ---------------- */
+    async function loadUsers() {
+      const { data, error } = await db.from("profiles").select("*").order("email");
+      if (error) { showMessage("Load users failed: " + error.message, true); return; }
+
+      const rows = document.getElementById("userRows");
+      rows.innerHTML = "";
+
+      data.forEach((u) => {
+        const tr = document.createElement("tr");
+        tr.append(cell(u.email || ""), cell(u.full_name || ""));
+
+        const td = document.createElement("td");
+        if (u.id === currentProfile.id) {
+          td.textContent = u.role + " (you)";
+        } else {
+          const select = document.createElement("select");
+          ["admin", "staff", "requester"].forEach((role) => {
+            const opt = document.createElement("option");
+            opt.value = role;
+            opt.textContent = role;
+            if (role === u.role) opt.selected = true;
+            select.appendChild(opt);
+          });
+          select.onchange = () => changeRole(u, select.value, select);
+          td.appendChild(select);
+        }
+        tr.appendChild(td);
+        rows.appendChild(tr);
+      });
+    }
+
+    async function changeRole(user, newRole, selectEl) {
+      if (!confirm("Change role of " + user.email + " to " + newRole + "?")) {
+        selectEl.value = user.role;
+        return;
+      }
+      const { error } = await db.from("profiles").update({ role: newRole }).eq("id", user.id);
+      if (error) {
+        showMessage("Change role failed: " + error.message, true);
+        selectEl.value = user.role;
+        return;
+      }
+      showMessage("Role updated: " + user.email + " is now " + newRole + ".", false);
+      loadUsers();
+    }
+
+    /* ---------------- AUDIT LOGS ---------------- */
+    async function loadAuditLogs() {
+      const { data, error } = await db
+        .from("audit_logs")
+        .select("*")
+        .order("created_at", { ascending: false })
+        .limit(50);
+
+      if (error) { showMessage("Load audit logs failed: " + error.message, true); return; }
+
+      const rows = document.getElementById("auditRows");
+      rows.innerHTML = "";
+
+      data.forEach((log) => {
+        const tr = document.createElement("tr");
+        tr.append(
+          cell(new Date(log.created_at).toLocaleString()),
+          cell(log.action),
+          cell(log.details || ""),
+          cell(log.performed_by_email || ""),
+          cell(log.performed_by_role || "")
+        );
+        rows.appendChild(tr);
+      });
+    }
+
+    requireRole(["admin"]).then((profile) => {
+      if (!profile) return;
+      currentProfile = profile;
+      document.getElementById("who").textContent = profile.email + " (" + profile.role + ")";
+      loadReservations();
+      loadFacilities();
+      loadUsers();
+      loadAuditLogs();
+    });
+  </script>
+</body>
+</html>
